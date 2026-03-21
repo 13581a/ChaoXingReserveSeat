@@ -23,7 +23,7 @@ get_current_dayofweek = lambda action: (
 )
 
 
-SLEEPTIME = 0.5  # 每次抢座的间隔
+SLEEPTIME = 1.0  # 每次抢座的间隔
 ENDTIME = "08:01:00"  # 根据学校的预约座位时间+1min即可
 
 ENABLE_SLIDER = False  # 是否有滑块验证
@@ -150,7 +150,7 @@ def get_roomid(args1, args2):
 
 
 if __name__ == "__main__":
-    time.sleep(47)
+    time.sleep(42)
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     parser = argparse.ArgumentParser(prog="Chao Xing seat auto reserve")
     parser.add_argument("-u", "--user", default=config_path, help="user config file")
