@@ -69,7 +69,6 @@ def login_and_reserve(users, usernames, passwords, action, success_list=None):
 
 
 def main(users, action=False):
-    time.sleep(47)
     current_time = get_current_time(action)
     logging.info(f"start time {current_time}, action {'on' if action else 'off'}")
     attempt_times = 0
@@ -151,6 +150,7 @@ def get_roomid(args1, args2):
 
 
 if __name__ == "__main__":
+    time.sleep(47)
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     parser = argparse.ArgumentParser(prog="Chao Xing seat auto reserve")
     parser.add_argument("-u", "--user", default=config_path, help="user config file")
