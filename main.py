@@ -150,7 +150,18 @@ def get_roomid(args1, args2):
 
 
 if __name__ == "__main__":
-    time.sleep(42)
+    # 计算距离北京时间 08:00:00 的剩余秒数，确保整点发送请求
+    beijing_now = time.time() + 8 * 3600
+    beijing_struct = time.gmtime(beijing_now)
+    target_seconds = 8 * 3600  # 当天 08:00:00
+    current_seconds = beijing_struct.tm_hour * 3600 + beijing_struct.tm_min * 60 + beijing_struct.tm_sec
+    wait = target_seconds - current_seconds
+    if wait > 0:
+        logging.info(f"距离北京时间 08:00:00 还有 {wait} 秒，等待中...")
+        time.sleep(wait)
+    else:
+        logging.info(f"已过北京时间 08:00:00，立即执行")
+        
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     parser = argparse.ArgumentParser(prog="Chao Xing seat auto reserve")
     parser.add_argument("-u", "--user", default=config_path, help="user config file")
