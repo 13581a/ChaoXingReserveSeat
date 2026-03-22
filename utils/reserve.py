@@ -74,7 +74,6 @@ class reserve:
     def _get_page_token(self, url, require_value=False):
         response = self.requests.get(url=url, verify=False)
         html = response.content.decode("utf-8")
-        # matches = re.findall(r"token = \'(.*?)\'", html)
         matches = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
         value_matches = None
         if require_value:
@@ -122,7 +121,6 @@ class reserve:
             print(info)
 
     # solve captcha
-
     def resolve_captcha(self):
         logging.info(f"Start to resolve captcha token")
         captcha_token, bg, tp = self.get_slide_captcha_data()
@@ -261,13 +259,9 @@ class reserve:
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
         delta_day = 1 if self.reserve_next_day else 0
-        day = datetime.date.today() + datetime.timedelta(
-            days=0 + delta_day
-        )  # 预约今天，修改days=1表示预约明天
-        if action:
-            day = datetime.date.today() + datetime.timedelta(
-                days=1 + delta_day
-            )  # 由于action时区问题导致其早+8区一天
+        # 使用北京时间计算日期，避免UTC日期偏差
+        beijing_today = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+        day = beijing_today.date() + datetime.timedelta(days=delta_day)
         parm = {
             "roomId": roomid,
             "startTime": times[0],
@@ -280,7 +274,6 @@ class reserve:
             "verifyData": "1",
         }
         logging.info(f"submit parameter {parm} ")
-        # parm["enc"] = enc(parm)
         parm["enc"] = verify_param(parm, value)
         html = self.requests.post(url=url, params=parm, verify=True).content.decode(
             "utf-8"
