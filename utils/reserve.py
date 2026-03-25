@@ -228,7 +228,8 @@ class reserve:
         _, _, _, max_loc = cv2.minMaxLoc(res)
         tl = max_loc
         return tl[0]
-def submit(self, times, roomid, seatid, action):
+
+    def submit(self, times, roomid, seatid, action):
         for seat in seatid:
             suc = False
             while ~suc and self.max_attempt > 0:
@@ -258,6 +259,7 @@ def submit(self, times, roomid, seatid, action):
                 time.sleep(self.sleep_time)
                 self.max_attempt -= 1
         return suc
+
     def get_submit(
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
