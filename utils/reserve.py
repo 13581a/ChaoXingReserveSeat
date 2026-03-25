@@ -228,38 +228,36 @@ class reserve:
         _, _, _, max_loc = cv2.minMaxLoc(res)
         tl = max_loc
         return tl[0]
-
-    def submit(self, times, roomid, seatid, action):
+def submit(self, times, roomid, seatid, action):
         for seat in seatid:
             suc = False
-        while ~suc and self.max_attempt > 0:
-            token, value = self._get_page_token(
-                self.url.format(roomid, seat), require_value=True
-            )
-            logging.info(f"Get token: {token}")
-            if not token:
-                logging.warning("Token is empty, retrying page fetch...")
+            while ~suc and self.max_attempt > 0:
+                token, value = self._get_page_token(
+                    self.url.format(roomid, seat), require_value=True
+                )
+                logging.info(f"Get token: {token}")
+                if not token:
+                    logging.warning("Token is empty, retrying page fetch...")
+                    time.sleep(self.sleep_time)
+                    self.max_attempt -= 1
+                    continue
+                captcha = self.resolve_captcha() if self.enable_slider else ""
+                logging.info(f"Captcha token {captcha}")
+                suc = self.get_submit(
+                    self.submit_url,
+                    times=times,
+                    token=token,
+                    roomid=roomid,
+                    seatid=seat,
+                    captcha=captcha,
+                    action=action,
+                    value=value,
+                )
+                if suc:
+                    return suc
                 time.sleep(self.sleep_time)
                 self.max_attempt -= 1
-                continue  # 重新循环，再次请求页面拿token
-            captcha = self.resolve_captcha() if self.enable_slider else ""
-            logging.info(f"Captcha token {captcha}")
-            suc = self.get_submit(
-                self.submit_url,
-                times=times,
-                token=token,
-                roomid=roomid,
-                seatid=seat,
-                captcha=captcha,
-                action=action,
-                value=value,
-            )
-            if suc:
-                return suc
-            time.sleep(self.sleep_time)
-            self.max_attempt -= 1
-    return suc
-
+        return suc
     def get_submit(
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
