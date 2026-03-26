@@ -42,8 +42,8 @@ def login_and_reserve(users, usernames, passwords, action, success_list=None):
     current_dayofweek = get_current_dayofweek(action)
     for index, user in enumerate(users):
         username, password, times, roomid, seatid, daysofweek = user.values()
-if type(seatid) == str:
-    seatid = [seatid]
+        if type(seatid) == str:
+            seatid = [seatid]
         if action:
             username, password = (
                 usernames.split(",")[index],
