@@ -127,3 +127,10 @@ MAX_ATTEMPT = 4 # 最大尝试次数
 
 目前无法实现跨单位座位预约。
 
+## 2026修改部分
+- 1.删除了滑块部分(学校不需要)
+- 2.utils/reserve.py修复token为空时重复提交问题
+- 3.utils/reserve.py由UTC日期改为北京日期
+- 4.main.py动态计算距北京08:00的剩余秒数并等待
+- 5.main.py中对login_and_reserve()对字符串类型的seatid做转换的修复
+- 6.reserve.yml中workflow使用 -m debug改为 -m reserve实现多人预约
