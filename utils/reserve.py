@@ -80,6 +80,7 @@ class reserve:
             value_matches = re.findall(r'value="(.*?)"', html)
             if not matches:
                 logging.error(f"Failed to get token from {url}")
+                logging.error(f"Page response (500 chars): {html[:500]}")
                 return "", ""
             if not value_matches:
                 logging.error(f"Failed to get submit value from {url}")
