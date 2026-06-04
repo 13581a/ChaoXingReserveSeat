@@ -134,3 +134,4 @@ MAX_ATTEMPT = 4 # 最大尝试次数
 - 4.main.py动态计算距北京08:00的剩余秒数并等待
 - 5.main.py中对login_and_reserve()对字符串类型的seatid做转换的修复
 - 6.reserve.yml中workflow使用 -m debug改为 -m reserve实现多人预约
+-7.每两个月记得提交一次防止仓库不活跃
