@@ -1,4 +1,3 @@
-python
 from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
 import requests
@@ -10,7 +9,9 @@ from urllib3.exceptions import InsecureRequestWarning
 
 
 def get_date(day_offset: int = 0):
-    today = datetime.datetime.now().date()
+    # 统一使用标准的北京时间
+    tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
+    today = datetime.datetime.now(tz_beijing).date()
     offset_day = today + datetime.timedelta(days=day_offset)
     tomorrow = offset_day.strftime("%Y-%m-%d")
     return tomorrow
@@ -285,8 +286,9 @@ class reserve:
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
         delta_day = 1 if self.reserve_next_day else 0
-        # 使用北京时间计算日期，避免UTC日期偏差
-        beijing_today = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+        # 修复：确保在 GitHub Actions 的 UTC 环境下精准拿到北京时间
+        tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
+        beijing_today = datetime.datetime.now(tz_beijing)
         day = beijing_today.date() + datetime.timedelta(days=delta_day)
         parm = {
             "roomId": roomid,
