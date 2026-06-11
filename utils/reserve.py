@@ -1,3 +1,4 @@
+```python
 from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
 import requests
@@ -72,8 +73,27 @@ class reserve:
 
     # login and page token
     def _get_page_token(self, url, require_value=False):
-        response = self.requests.get(url=url, verify=False)
-        html = response.content.decode("utf-8")
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            cookies = [
+                {"name": c.name, "value": c.value, "domain": c.domain, "path": c.path}
+                for c in self.requests.cookies
+            ]
+            context.add_cookies(cookies)
+            page = context.new_page()
+            page.goto(url)
+            try:
+                page.wait_for_selector('input#submit_enc', timeout=10000)
+            except Exception:
+                logging.error(f"Failed to get token from {url}")
+                html = page.content()
+                logging.error(f"Page response (500 chars): {html[:500]}")
+                browser.close()
+                return "", ""
+            html = page.content()
+            browser.close()
         matches = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
         value_matches = None
         if require_value:
@@ -289,3 +309,4 @@ class reserve:
         )
         logging.info(json.loads(html))
         return json.loads(html)["success"]
+```
