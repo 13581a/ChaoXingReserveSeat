@@ -1,4 +1,4 @@
-```yaml
+yaml
 # This is a basic workflow that is manually triggered
 
 name: auto_Reserve
@@ -32,4 +32,3 @@ jobs:
           PASSWORDS: ${{ secrets.PASSWORDS }}
         run: |
           python main.py -m reserve --action
-```
