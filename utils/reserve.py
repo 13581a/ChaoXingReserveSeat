@@ -1,4 +1,4 @@
-```python
+python
 from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
 import requests
@@ -309,4 +309,3 @@ class reserve:
         )
         logging.info(json.loads(html))
         return json.loads(html)["success"]
-```
