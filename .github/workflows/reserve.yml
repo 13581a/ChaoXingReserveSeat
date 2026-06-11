@@ -1,3 +1,4 @@
+```yaml
 # This is a basic workflow that is manually triggered
 
 name: auto_Reserve
@@ -6,15 +7,15 @@ name: auto_Reserve
 # or API.
 on:
   schedule:
-    - cron: "59 21 * * *"   # 每天六点直接触发
+    - cron: "0 22 * * *"   # UTC 22:00 = 北京时间次日 06:00，提前两小时等待
   workflow_dispatch:
-  
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-  
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v2
         with:
@@ -22,7 +23,8 @@ jobs:
       - name: install dependency
         run: |
           python -m pip install --upgrade pip
-          pip install cryptography requests
+          pip install cryptography requests playwright
+          playwright install chromium
 
       - name: run script
         env:
@@ -30,3 +32,4 @@ jobs:
           PASSWORDS: ${{ secrets.PASSWORDS }}
         run: |
           python main.py -m reserve --action
+```
