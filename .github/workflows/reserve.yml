@@ -7,17 +7,14 @@ on:
     - cron: "0 22 * * *"   # UTC 22:00 = 北京时间次日 06:00
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2  # ✅ 修复：pinned 到原生支持 Node 24 的版本
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0  # ✅ 修复：同上，移除 FORCE_JAVASCRIPT_ACTIONS_TO_NODE24
         with:
           python-version: 3.11
 
