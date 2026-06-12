@@ -99,8 +99,11 @@ def submit_all(prepared, success_list):
                 value=value,
             )
             if suc:
+                logging.info(f"✅ 预约成功！seat={seat} times={times} roomid={roomid}")
                 success_list[index] = True
                 break
+            else:
+                logging.warning(f"❌ 预约失败 seat={seat} times={times}，继续尝试下一座位...")
     return success_list
 
 
