@@ -135,10 +135,11 @@ def main(users, action=False):
     while current_time < ENDTIME:
         attempt_times += 1
         success_list = submit_all(prepared, success_list)
-        print(f"attempt time {attempt_times}, time now {current_time}, success list {success_list}")
+        # ✅ 修复：改用 logging.info 替代 print，确保 GitHub Actions 日志可见
+        logging.info(f"attempt time {attempt_times}, time now {current_time}, success list {success_list}")
         current_time = get_current_time(action)
         if sum(success_list) == today_reservation_num:
-            print("reserved successfully!")
+            logging.info("reserved successfully!")  # ✅ 修复：同上
             return
         # token用完了重新拿
         if attempt_times % 3 == 0:
