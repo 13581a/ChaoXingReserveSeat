@@ -9,7 +9,6 @@ from urllib3.exceptions import InsecureRequestWarning
 
 
 def get_date(day_offset: int = 0):
-    # 统一使用标准的北京时间
     tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
     today = datetime.datetime.now(tz_beijing).date()
     offset_day = today + datetime.timedelta(days=day_offset)
@@ -72,8 +71,21 @@ class reserve:
         self.reserve_next_day = reserve_next_day
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-    # login and page token
     def _get_page_token(self, url, require_value=False):
+        # 先用requests快速尝试
+        try:
+            response = self.requests.get(url=url, verify=False)
+            html = response.content.decode("utf-8")
+            matches = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
+            if matches:
+                value_matches = re.findall(r'value="(.*?)"', html) if require_value else None
+                logging.info("requests直接拿到token")
+                return matches[0], value_matches[0] if value_matches else ""
+        except Exception as e:
+            logging.warning(f"requests failed: {e}")
+
+        # 拿不到再用Playwright
+        logging.warning("Falling back to Playwright...")
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -84,13 +96,10 @@ class reserve:
             ]
             context.add_cookies(cookies)
             page = context.new_page()
-            page.goto(url)
             try:
-                page.wait_for_selector('input#submit_enc', timeout=10000)
-            except Exception:
-                logging.error(f"Failed to get token from {url}")
-                html = page.content()
-                logging.error(f"Page response (500 chars): {html[:500]}")
+                page.goto(url, wait_until="networkidle", timeout=60000)
+            except Exception as e:
+                logging.error(f"page.goto failed: {e}")
                 browser.close()
                 return "", ""
             html = page.content()
@@ -133,7 +142,6 @@ class reserve:
             )
             return (False, obj["msg2"])
 
-    # extra: get roomid
     def roomid(self, encode):
         url = f"https://office.chaoxing.com/data/apps/seat/room/list?cpage=1&pageSize=100&firstLevelName=&secondLevelName=&thirdLevelName=&deptIdEnc={encode}"
         json_data = self.requests.get(url=url).content.decode("utf-8")
@@ -142,7 +150,6 @@ class reserve:
             info = f'{i["firstLevelName"]}-{i["secondLevelName"]}-{i["thirdLevelName"]} id为：{i["id"]}'
             print(info)
 
-    # solve captcha
     def resolve_captcha(self):
         logging.info(f"Start to resolve captcha token")
         captcha_token, bg, tp = self.get_slide_captcha_data()
@@ -150,7 +157,6 @@ class reserve:
         logging.info(f"Captcha Image URL-small {tp}, URL-big {bg}")
         x = self.x_distance(bg, tp)
         logging.info(f"Successfully calculate the captcha distance {x}")
-
         params = {
             "callback": "jQuery33109180509737430778_1716381333117",
             "captchaId": "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1",
@@ -198,7 +204,6 @@ class reserve:
         }
         response = self.requests.get(url=url, params=params, headers=self.headers)
         content = response.text
-
         data = content.replace(
             "jQuery33107685004390294206_1716461324846(", ")"
         ).replace(")", "")
@@ -286,7 +291,6 @@ class reserve:
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
         delta_day = 1 if self.reserve_next_day else 0
-        # 修复：确保在 GitHub Actions 的 UTC 环境下精准拿到北京时间
         tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
         beijing_today = datetime.datetime.now(tz_beijing)
         day = beijing_today.date() + datetime.timedelta(days=delta_day)
