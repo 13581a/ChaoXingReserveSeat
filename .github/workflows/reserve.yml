@@ -7,14 +7,17 @@ on:
     - cron: "0 22 * * *"   # UTC 22:00 = 北京时间次日 06:00
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4  # 顺手升级到 v4，避免旧版 node 警告导致中断
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5 # 顺手升级到 v5
+        uses: actions/setup-python@v5
         with:
           python-version: 3.11
 
@@ -22,8 +25,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install cryptography requests playwright
-          python -m playwright install chromium  # 使用 python -m 调用更稳定
-          python -m playwright install-deps      # 补全 ubuntu 所有的底层依赖库
+          python -m playwright install chromium
+          python -m playwright install-deps
 
       - name: run script
         env:
