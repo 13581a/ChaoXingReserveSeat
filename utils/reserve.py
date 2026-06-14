@@ -354,17 +354,28 @@ class reserve:
             return False
 
     def warmup_token(self, roomid, seatid):
-        """预热验证：登录后立即尝试获取 token，提前发现 session 问题。
-        在 08:00 前调用，不消耗关键时刻的重试次数。"""
-        seatid = seatid[0] if isinstance(seatid, list) else seatid
-        url = self.url.format(roomid, seatid)
-        logging.info(f"[warmup] 预热验证 session, url={url}")
-        token, value = self._get_page_token(url, require_value=True)
-        if token:
-            logging.info(f"[warmup] ✅ session 有效, token_len={len(token)}")
-            return True
-        else:
-            logging.warning(f"[warmup] ❌ session 无效或页面异常，将触发重登录")
+        """预热验证：访问 office 主页确认 session 有效。
+        ⚠️ 刻意不访问座位页面——那个页面会生成 token 并开始计时，
+        导致后续真正的提交被判定'页面停留过久(代码:303)'。"""
+        url = "https://office.chaoxing.com/"
+        fetch_headers = {
+            "Referer": "https://office.chaoxing.com/",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Host": "office.chaoxing.com",
+            "X-Requested-With": None,
+            "Content-Type": None,
+        }
+        try:
+            resp = self.requests.get(url=url, headers=fetch_headers, timeout=10, verify=False)
+            ok = resp.status_code == 200 and len(resp.text) > 500
+            if ok:
+                logging.info(f"[warmup] ✅ session 有效 (HTTP 200, len={len(resp.text)})")
+            else:
+                logging.warning(f"[warmup] ❌ session 异常 HTTP {resp.status_code}, len={len(resp.text)}")
+            return ok
+        except Exception as e:
+            logging.warning(f"[warmup] ❌ 请求失败: {e}")
             return False
 
     def touch_session(self, roomid, seatid):
