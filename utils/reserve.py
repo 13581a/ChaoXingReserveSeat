@@ -201,8 +201,6 @@ class reserve:
                             logging.debug("[token] token 通过邻近搜索匹配到")
 
                 # 提取 algorithm → value（多模式，覆盖页面结构变化）
-                # 页面已不再使用 <input id="algorithm">，algorithm 可能在
-                # <script>、data-* 属性、或页面 JS 全局变量中
                 value = ""
                 if require_value:
                     # 1) 传统 <input id="algorithm" value="...">
@@ -248,7 +246,6 @@ class reserve:
                     # 4) 兜底：页面中所有非 token 的 value，取第一个作为 algorithm
                     if not value:
                         all_values = re.findall(r'value="(.*?)"', html)
-                        # 排除 token 本身，剩下的第一个可能就是 algorithm
                         candidates = [v for v in all_values if v != token and len(v) > 0]
                         if candidates:
                             value = candidates[0]
@@ -256,22 +253,25 @@ class reserve:
                                 f"[token] value(4-fallback) 使用页面首个非token值, "
                                 f"len={len(value)}, preview={value[:50]}"
                             )
-                        # 5) 最后尝试：token 本身可能嵌有 algorithm（如 {hex}_{algorithm}）
-                        elif "_" in token:
+
+                    # 如果仍未找到，打印 submit_enc 周围 HTML 辅助排查
+                    if not value:
+                        m = re.search(r'id="submit_enc"', html)
+                        ctx_start = max(0, m.start() - 500) if m else max(0, len(html)//2 - 500)
+                        ctx_end = min(len(html), ctx_start + 1500)
+                        logging.warning(
+                            f"[token] ⚠️ algorithm 未提取到! "
+                            f"token周围HTML({ctx_start}-{ctx_end}):\n{html[ctx_start:ctx_end]}"
+                        )
+                        # 最后尝试：token 后缀（大概率不对，但比空值好）
+                        if "_" in token:
                             parts = token.rsplit("_", 1)
                             if len(parts) == 2 and len(parts[1]) > 0:
                                 value = parts[1]
                                 logging.info(
-                                    f"[token] value(5-token-split) 从token后缀提取algorithm, "
-                                    f"value={value}, token_prefix={parts[0][:16]}..."
+                                    f"[token] value(5-token-split) 从token后缀提取(可能错误), "
+                                    f"value={value}"
                                 )
-                        else:
-                            # 完全没有其他 value，打印更多 HTML 辅助排查
-                            logging.warning(
-                                f"[token] ⚠️ algorithm 完全无法提取! "
-                                f"页面共 {len(all_values)} 个 value, "
-                                f"HTML(1000字符): {html[:1000]}"
-                            )
 
                 if token:
                     logging.info(
