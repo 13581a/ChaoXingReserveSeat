@@ -323,10 +323,10 @@ class reserve:
             return False
 
     def touch_session(self, roomid, seatid):
-        """触活 session：发一个轻量请求保持 session 活跃，避免'页面停留过长'。
-        在 08:00 整点调用，不提取 token，只求 HTTP 200。"""
-        seatid = seatid[0] if isinstance(seatid, list) else seatid
-        url = self.url.format(roomid, seatid)
+        """触活 session：访问 office 主页保持 cookie 活跃。
+        ⚠️ 刻意不访问座位页面，避免生成无用 token 导致后续'页面停留过久'。"""
+        # 使用 office 主页而非座位页面，不会触发 token 生成计时
+        url = "https://office.chaoxing.com/"
         fetch_headers = {
             "Referer": "https://office.chaoxing.com/",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
@@ -506,6 +506,17 @@ class reserve:
         "未到开放时间",     # 保留精确匹配
     ]
 
+    # 匹配"页面停留过久"/token过期类消息（按实际日志: 代码:303）
+    TOKEN_EXPIRED_KEYWORDS = [
+        "页面停留过久",
+        "安全验证已超时",
+        "请刷新后再提交",
+        "代码:303",
+        "页面已过期",
+        "token已过期",
+        "token过期",
+    ]
+
     @classmethod
     def _is_not_open_yet(cls, msg):
         """判断提交失败原因是否为'未到开放时间'（服务器时钟比本地慢）"""
@@ -513,6 +524,17 @@ class reserve:
             return False
         msg_lower = msg.lower()
         for kw in cls.NOT_OPEN_YET_KEYWORDS:
+            if kw in msg_lower or kw in msg:
+                return True
+        return False
+
+    @classmethod
+    def _is_token_expired(cls, msg):
+        """判断提交失败原因是否为 token 过期/页面停留过久（需刷新页面重取token）"""
+        if not msg:
+            return False
+        msg_lower = msg.lower()
+        for kw in cls.TOKEN_EXPIRED_KEYWORDS:
             if kw in msg_lower or kw in msg:
                 return True
         return False
