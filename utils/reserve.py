@@ -200,9 +200,12 @@ class reserve:
                             token = v.group(1)
                             logging.debug("[token] token 通过邻近搜索匹配到")
 
-                # 提取 algorithm → value
+                # 提取 algorithm → value（多模式，覆盖页面结构变化）
+                # 页面已不再使用 <input id="algorithm">，algorithm 可能在
+                # <script>、data-* 属性、或页面 JS 全局变量中
                 value = ""
                 if require_value:
+                    # 1) 传统 <input id="algorithm" value="...">
                     for regex in (
                         r'<input[^>]*id="algorithm"[^>]*value="([^"]*)"',
                         r'<input[^>]*name="algorithm"[^>]*value="([^"]*)"',
@@ -210,22 +213,64 @@ class reserve:
                         r'<input[^>]*value="([^"]*)"[^>]*name="algorithm"',
                     ):
                         m = re.findall(regex, html)
-                        if m:
+                        if m and m[0]:
                             value = m[0]
-                            logging.debug(f"[token] value 匹配到正则: {regex[:50]}...")
+                            logging.debug(f"[token] value(1) 匹配: {regex[:50]}...")
                             break
+
+                    # 2) <script> 中的 algorithm 变量 / JSON
                     if not value:
-                        m = re.search(r'(?:id|name)="algorithm"', html)
-                        if m:
-                            nearby = html[max(0,m.start()-100):m.end()+200]
-                            v = re.search(r'value="([^"]*)"', nearby)
-                            if v:
-                                value = v.group(1)
-                        if not value:
-                            all_values = re.findall(r'value="(.*?)"', html)
+                        for regex in (
+                            r'algorithm\s*[:=]\s*["\']([^"\']+)["\']',
+                            r'["\']algorithm["\']\s*[:=]\s*["\']([^"\']+)["\']',
+                            r'var\s+algorithm\s*=\s*["\']([^"\']+)["\']',
+                            r'window\.algorithm\s*=\s*["\']([^"\']+)["\']',
+                        ):
+                            m = re.findall(regex, html)
+                            if m and m[0]:
+                                value = m[0]
+                                logging.debug(f"[token] value(2-script) 匹配: {regex[:50]}...")
+                                break
+
+                    # 3) data-algorithm / meta 标签
+                    if not value:
+                        for regex in (
+                            r'data-algorithm\s*=\s*["\']([^"\']+)["\']',
+                            r'<meta[^>]*name="algorithm"[^>]*content="([^"]*)"',
+                            r'<meta[^>]*content="([^"]*)"[^>]*name="algorithm"',
+                        ):
+                            m = re.findall(regex, html)
+                            if m and m[0]:
+                                value = m[0]
+                                logging.debug(f"[token] value(3-meta) 匹配: {regex[:50]}...")
+                                break
+
+                    # 4) 兜底：页面中所有非 token 的 value，取第一个作为 algorithm
+                    if not value:
+                        all_values = re.findall(r'value="(.*?)"', html)
+                        # 排除 token 本身，剩下的第一个可能就是 algorithm
+                        candidates = [v for v in all_values if v != token and len(v) > 0]
+                        if candidates:
+                            value = candidates[0]
+                            logging.info(
+                                f"[token] value(4-fallback) 使用页面首个非token值, "
+                                f"len={len(value)}, preview={value[:50]}"
+                            )
+                        # 5) 最后尝试：token 本身可能嵌有 algorithm（如 {hex}_{algorithm}）
+                        elif "_" in token:
+                            parts = token.rsplit("_", 1)
+                            if len(parts) == 2 and len(parts[1]) > 0:
+                                value = parts[1]
+                                logging.info(
+                                    f"[token] value(5-token-split) 从token后缀提取algorithm, "
+                                    f"value={value}, token_prefix={parts[0][:16]}..."
+                                )
+                        else:
+                            # 完全没有其他 value，打印更多 HTML 辅助排查
                             logging.warning(
-                                f"[token] 所有 algorithm 正则均未匹配, "
-                                f"页面 value 片段(前5): {all_values[:5]}"
+                                f"[token] ⚠️ algorithm 完全无法提取! "
+                                f"页面共 {len(all_values)} 个 value, "
+                                f"HTML(1000字符): {html[:1000]}"
                             )
 
                 if token:
@@ -559,7 +604,7 @@ class reserve:
             "verifyData": "1",
         }
         logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
-                     f"day={day} {times[0]}~{times[1]}")
+                     f"day={day} {times[0]}~{times[1]} value_len={len(value)}")
         parm["enc"] = verify_param(parm, value)
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
