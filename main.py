@@ -115,9 +115,11 @@ def submit_all(prepared, success_list):
                     logging.warning(f"[submit_all] seat={seat} 重登录失败，跳过")
                     continue
 
-            # 提交循环：处理"未到开放时间"时快速重试
+            # 提交循环：处理"未到开放时间"和"页面停留过久"
             not_open_retries = 0
-            max_not_open_retries = 20  # 最多等 2 秒（20 × 100ms）
+            max_not_open_retries = 20     # 最多等 2 秒（20 × 100ms）
+            token_expired_retries = 0
+            max_token_expired_retries = 3  # token过期最多重取3次
             while True:
                 suc, msg = s.get_submit(
                     s.submit_url,
@@ -132,16 +134,40 @@ def submit_all(prepared, success_list):
                 if suc:
                     success_list[index] = True
                     break
+
                 # 检测"未到开放时间" → 短间隔重试，不换token
                 if s._is_not_open_yet(msg) and not_open_retries < max_not_open_retries:
                     not_open_retries += 1
                     logging.info(
                         f"[submit_all] ⏳ '未到开放时间' 第{not_open_retries}次, "
-                        f"100ms后重试（服务器时钟偏慢约{not_open_retries * 100}ms）..."
+                        f"100ms后重试..."
                     )
                     time.sleep(0.1)
                     continue
-                # 其他失败（或等待超时）→ 跳出内层，下一轮重试
+
+                # 检测"页面停留过久"(token过期) → 重新获取token，立即重试
+                if s._is_token_expired(msg) and token_expired_retries < max_token_expired_retries:
+                    token_expired_retries += 1
+                    logging.info(
+                        f"[submit_all] 🔄 '页面停留过久' 第{token_expired_retries}次, "
+                        f"重新获取token..."
+                    )
+                    new_token, new_value = s._get_page_token(url, require_value=True)
+                    if new_token:
+                        token, value = new_token, new_value
+                        logging.info(f"[submit_all] ✅ 新token获取成功, len={len(token)}")
+                        continue
+                    else:
+                        logging.warning(f"[submit_all] ⚠️ 重取token失败，尝试重登录...")
+                        if s.re_login():
+                            time.sleep(0.3)
+                            new_token, new_value = s._get_page_token(url, require_value=True)
+                            if new_token:
+                                token, value = new_token, new_value
+                                continue
+                        break
+
+                # 其他失败（或重试耗尽）→ 跳出内层，下一轮重试
                 break
             if success_list[index]:
                 break
@@ -185,18 +211,12 @@ def main(users, action=False):
     else:
         logging.info("[main] 预热登录完成，已过 08:00，立即尝试提交...")
 
-    # 🔑 08:00 整点：触活 session + 200ms 时钟偏差补偿
-    # 服务器时钟可能比本地慢 100~500ms，提前到达会返回"未到开放时间"
-    # 触活请求本身已消耗 ~100ms，再补 200ms 确保服务器也到了 08:00
-    logging.info("[main] 🕐 08:00 整点，触活 session + 时钟偏差补偿...")
-    for item in prepared:
-        if item is None:
-            continue
-        item["s"].touch_session(item["roomid"], item["seatid"])
-        time.sleep(random.uniform(0.05, 0.15))
-    # 补偿服务器时钟偏差：等服务器也过 08:00:00
+    # 🔑 08:00 整点：仅做时钟偏差补偿，不触活 session
+    # ⚠️ 不能在提交前访问座位页面（touch_session），否则服务器开始计时，
+    #    后续 token 提交会被判定"页面停留过久(代码:303)"
+    # 服务器时钟可能比本地慢 100~500ms，提前到达会由"未到开放时间"快速重试兜底
     CLOCK_SKEW_MS = 0.2  # 200ms
-    logging.info(f"[main] ⏱️ 等待 {CLOCK_SKEW_MS*1000:.0f}ms 补偿服务器时钟偏差...")
+    logging.info(f"[main] 🕐 08:00 整点, 等待 {CLOCK_SKEW_MS*1000:.0f}ms 时钟偏差补偿...")
     time.sleep(CLOCK_SKEW_MS)
 
     logging.info("[main] ⏰ 开始提交！")
