@@ -3,7 +3,6 @@ import time
 import argparse
 import os
 import logging
-import random
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -30,7 +29,7 @@ RESERVE_NEXT_DAY = True
 
 
 def prepare_all(users, usernames, passwords, action):
-    """提前登录 + token 预热验证，提前发现 session 问题"""
+    """提前登录，保存凭据用于高峰期重登录"""
     current_dayofweek = get_current_dayofweek(action)
     prepared = []
     for index, user in enumerate(users):
@@ -60,25 +59,6 @@ def prepare_all(users, usernames, passwords, action):
             prepared.append(None)
             continue
         s.requests.headers.update({"Host": "office.chaoxing.com"})
-
-        # 🔑 预热验证：立即尝试获取 token，提前发现 session 问题
-        warmup_ok = s.warmup_token(roomid, seatid)
-        if not warmup_ok:
-            logging.warning(f"[prepare] ⚠️ {username} 预热失败，尝试重登录...")
-            if s.re_login():
-                # 重登录后再试一次预热
-                time.sleep(0.3)
-                warmup_ok = s.warmup_token(roomid, seatid)
-                if warmup_ok:
-                    logging.info(f"[prepare] ✅ {username} 重登录后预热成功")
-                else:
-                    logging.warning(f"[prepare] ⚠️ {username} 重登录后预热仍失败，"
-                                  f"将在08:00重试")
-            else:
-                logging.error(f"[prepare] ❌ {username} 重登录失败")
-        else:
-            logging.info(f"[prepare] ✅ {username} 预热验证通过")
-
         prepared.append({
             "s": s,
             "times": times,
@@ -191,22 +171,11 @@ def main(users, action=False):
 
     # 如果已过 08:00，跳过等待直接提交
     if current_time < "08:00:00":
-        # ⏳ 在等待 08:00 期间，周期性触活 session，避免"页面停留过长"
-        logging.info("[main] 预热完成，等待 08:00:00 整点（期间保持 session 活跃）...")
-        last_touch = time.time()
+        logging.info("[main] 预热登录完成，等待 08:00:00 整点提交...")
         while True:
             current_time = get_current_time(action)
             if current_time >= "08:00:00":
                 break
-            # 每 30 秒触活一次所有 session（防止长时间无请求导致 session 过期）
-            now = time.time()
-            if now - last_touch >= 30:
-                logging.info("[main] 🔄 触活所有 session...")
-                for item in prepared:
-                    if item is None:
-                        continue
-                    item["s"].touch_session(item["roomid"], item["seatid"])
-                last_touch = now
             time.sleep(0.1)
     else:
         logging.info("[main] 预热登录完成，已过 08:00，立即尝试提交...")
