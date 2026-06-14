@@ -1,4 +1,4 @@
-from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
+from utils import AES_Encrypt, enc, generate_captcha_key
 import json
 import random
 import requests
@@ -606,11 +606,16 @@ class reserve:
     def get_submit(
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
-        """提交预约，返回 (success: bool, message: str)"""
+        """提交预约，返回 (success: bool, message: str)
+
+        API已更新（2026.06）：前端从 <input algorithm> 改为 submitVerify.verifyParam，
+        参数从 {token, type, verifyData} 改为 {wyToken}，enc 算法也不同。
+        """
         delta_day = 1 if self.reserve_next_day else 0
         tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
         beijing_today = datetime.datetime.now(tz_beijing)
         day = beijing_today.date() + datetime.timedelta(days=delta_day)
+        # 新API参数（匹配 code_myself_use_third.js doSubmit 函数）
         parm = {
             "roomId": roomid,
             "startTime": times[0],
@@ -618,13 +623,13 @@ class reserve:
             "day": str(day),
             "seatNum": seatid,
             "captcha": captcha,
-            "token": token,
-            "type": "1",
-            "verifyData": "1",
+            "wyToken": "",       # 风险校验token，非开放时段可为空
         }
         logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
-                     f"day={day} {times[0]}~{times[1]} value_len={len(value)}")
-        parm["enc"] = verify_param(parm, value)
+                     f"day={day} {times[0]}~{times[1]}")
+        # 用旧 enc() 函数（硬编码密钥）对新参数集计算哈希
+        # 新 submitVerify.verifyParam 大概率复用同一密钥
+        parm["enc"] = enc(parm)
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
         try:
