@@ -1,4 +1,4 @@
-from utils import AES_Encrypt, enc, generate_captcha_key
+from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
 import random
 import requests
@@ -606,16 +606,11 @@ class reserve:
     def get_submit(
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
     ):
-        """提交预约，返回 (success: bool, message: str)
-
-        API已更新（2026.06）：前端从 <input algorithm> 改为 submitVerify.verifyParam，
-        参数从 {token, type, verifyData} 改为 {wyToken}，enc 算法也不同。
-        """
+        """提交预约，返回 (success: bool, message: str)"""
         delta_day = 1 if self.reserve_next_day else 0
         tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
         beijing_today = datetime.datetime.now(tz_beijing)
         day = beijing_today.date() + datetime.timedelta(days=delta_day)
-        # 新API参数（匹配 code_myself_use_third.js doSubmit 函数）
         parm = {
             "roomId": roomid,
             "startTime": times[0],
@@ -623,13 +618,13 @@ class reserve:
             "day": str(day),
             "seatNum": seatid,
             "captcha": captcha,
-            "wyToken": "",       # 风险校验token，非开放时段可为空
+            "token": token,
+            "type": "1",
+            "verifyData": "1",
         }
         logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
                      f"day={day} {times[0]}~{times[1]}")
-        # 用旧 enc() 函数（硬编码密钥）对新参数集计算哈希
-        # 新 submitVerify.verifyParam 大概率复用同一密钥
-        parm["enc"] = enc(parm)
+        parm["enc"] = verify_param(parm, value)
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
         try:
@@ -638,14 +633,13 @@ class reserve:
             msg = f"HTTP={resp.status_code}, 内容={html[:200]}"
             logging.error(f"[submit] 响应非JSON: {msg}")
             return (False, msg)
-        # 提取服务器返回的消息
         msg = str(result.get("msg", result.get("message", result.get("msg2", ""))))
         self.submit_msg.append(f"{times[0]}~{times[1]}: {result}")
         success = result.get("success", False)
         if success:
             logging.info(f"[submit] ✅ 预约成功! {result}")
         elif self._is_not_open_yet(msg):
-            logging.warning(f"[submit] ⏳ 服务器返回'未到开放时间'(服务器时钟偏慢): {msg}")
+            logging.warning(f"[submit] ⏳ '未到开放时间': {msg}")
         else:
             logging.warning(f"[submit] ❌ 预约失败: {result}")
         return (success, msg)
