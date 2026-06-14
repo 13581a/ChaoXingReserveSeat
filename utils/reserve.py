@@ -325,7 +325,12 @@ class reserve:
             "t": True,
         }
         resp = self.requests.post(url=self.login_url, params=parm, verify=False)
-        obj = resp.json()
+        try:
+            obj = resp.json()
+        except Exception:
+            logging.error(f"[login] 响应非JSON HTTP={resp.status_code}, 内容={resp.text[:200]}")
+            self._logged_in = False
+            return (False, f"HTTP {resp.status_code}: {resp.text[:100]}")
         if obj.get("status"):
             self._logged_in = True
             logging.info(f"[login] 用户 {username} 登录成功")
@@ -342,15 +347,18 @@ class reserve:
             logging.error("[re_login] 无可用凭据，无法重登录")
             return False
         logging.info(f"[re_login] 尝试重登录 {self._username} ...")
-        # 先获取新的 cookie
-        self.get_login_status()
-        ok, msg = self.login(self._username, self._password)
-        if ok:
-            self.requests.headers.update({"Host": "office.chaoxing.com"})
-            logging.info(f"[re_login] ✅ 重登录成功")
-            return True
-        else:
-            logging.error(f"[re_login] ❌ 重登录失败: {msg}")
+        try:
+            self.get_login_status()
+            ok, msg = self.login(self._username, self._password)
+            if ok:
+                self.requests.headers.update({"Host": "office.chaoxing.com"})
+                logging.info(f"[re_login] ✅ 重登录成功")
+                return True
+            else:
+                logging.error(f"[re_login] ❌ 重登录失败: {msg}")
+                return False
+        except Exception as e:
+            logging.error(f"[re_login] ❌ 重登录异常: {e}")
             return False
 
     def warmup_token(self, roomid, seatid):
