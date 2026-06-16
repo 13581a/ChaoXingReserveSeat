@@ -1,8 +1,10 @@
 import json
 import time
+import random
 import argparse
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -26,13 +28,16 @@ ENDTIME = "08:01:00"
 ENABLE_SLIDER = False
 MAX_ATTEMPT = 5
 RESERVE_NEXT_DAY = True
+MAX_WORKERS = 10  # 最大并行线程数，可根据需要调整
 
 
 def prepare_all(users, usernames, passwords, action):
-    """提前登录，不拿token"""
+    """并行提前登录，多个用户同时进行，大幅缩短登录等待时间"""
     current_dayofweek = get_current_dayofweek(action)
-    prepared = []
-    for index, user in enumerate(users):
+    prepared = [None] * len(users)
+
+    def login_one(index):
+        user = users[index]
         username, password, times, roomid, seatid, daysofweek = user.values()
         if type(seatid) == str:
             seatid = [seatid]
@@ -42,9 +47,8 @@ def prepare_all(users, usernames, passwords, action):
                 passwords.split(",")[index],
             )
         if current_dayofweek not in daysofweek:
-            prepared.append(None)
-            continue
-        logging.info(f"[prepare] ({index+1}/{len(users)}) 预热登录: user={username}, "
+            return index, None
+        logging.info(f"[prepare] ({index+1}/{len(users)}) 并行登录: user={username}, "
                      f"times={times}, seatid={seatid}, roomid={roomid}")
         s = reserve(
             sleep_time=SLEEPTIME,
@@ -55,21 +59,43 @@ def prepare_all(users, usernames, passwords, action):
         s.get_login_status()
         s.login(username, password)
         s.requests.headers.update({"Host": "office.chaoxing.com"})
-        prepared.append({
+        return index, {
             "s": s,
             "times": times,
             "roomid": roomid,
             "seatid": seatid,
             "action": action,
-        })
+        }
+
+    workers = min(MAX_WORKERS, len(users))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="login") as executor:
+        futures = [executor.submit(login_one, i) for i in range(len(users))]
+        for future in as_completed(futures):
+            try:
+                idx, result = future.result()
+                prepared[idx] = result
+            except Exception as e:
+                logging.error(f"[prepare] 线程异常 index={idx}: {e}")
+
     return prepared
 
 
 def submit_all(prepared, success_list):
-    """实时拿token并立刻提交"""
-    for index, item in enumerate(prepared):
-        if item is None or success_list[index]:
-            continue
+    """并行提交预约，多个用户同时抢座，互不阻塞"""
+    # 收集当前轮需要提交的项（未成功且有效）
+    pending = [
+        (i, item)
+        for i, item in enumerate(prepared)
+        if item is not None and not success_list[i]
+    ]
+    if not pending:
+        return success_list
+
+    def submit_one(index, item):
+        # 随机抖动 50~300ms，避免所有线程同时请求触发反爬
+        jitter = random.uniform(0.05, 0.3)
+        time.sleep(jitter)
+
         s = item["s"]
         times = item["times"]
         roomid = item["roomid"]
@@ -81,7 +107,7 @@ def submit_all(prepared, success_list):
             if not token:
                 logging.warning(f"[submit_all] seat={seat} token为空，跳过")
                 continue
-            suc = s.get_submit(
+            result = s.get_submit(
                 s.submit_url,
                 times=times,
                 token=token,
@@ -91,9 +117,36 @@ def submit_all(prepared, success_list):
                 action=action,
                 value=value,
             )
-            if suc:
-                success_list[index] = True
-                break
+            if result == "RELOGIN":
+                # 会话过期已自动重登，重新获取token再试
+                logging.info(f"[submit_all] 用户{index} 重登成功，重试获取token...")
+                token2, value2 = s._get_page_token(url, require_value=True)
+                if token2:
+                    result = s.get_submit(
+                        s.submit_url,
+                        times=times,
+                        token=token2,
+                        roomid=roomid,
+                        seatid=seat,
+                        captcha="",
+                        action=action,
+                        value=value2,
+                    )
+            if result and result != "RELOGIN":
+                return index, True
+        return index, False
+
+    workers = min(MAX_WORKERS, len(pending))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="submit") as executor:
+        futures = {executor.submit(submit_one, i, item): i for i, item in pending}
+        for future in as_completed(futures):
+            try:
+                idx, result = future.result()
+                if result:
+                    success_list[idx] = True
+            except Exception as e:
+                logging.error(f"[submit_all] 线程异常 index={futures[future]}: {e}")
+
     return success_list
 
 
@@ -147,12 +200,13 @@ def debug(users, action=False):
     logging.info(
         f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
     )
-    suc = False
     logging.info(f" Debug Mode start! , action {'on' if action else 'off'}")
     if action:
         usernames, passwords = get_user_credentials(action)
     current_dayofweek = get_current_dayofweek(action)
-    for index, user in enumerate(users):
+
+    def debug_one(index):
+        user = users[index]
         username, password, times, roomid, seatid, daysofweek = user.values()
         if type(seatid) == str:
             seatid = [seatid]
@@ -163,7 +217,7 @@ def debug(users, action=False):
             )
         if current_dayofweek not in daysofweek:
             logging.info("Today not set to reserve")
-            continue
+            return False
         logging.info(f"----------- {username} -- {times} -- {seatid} try -----------")
         s = reserve(
             sleep_time=SLEEPTIME,
@@ -174,9 +228,21 @@ def debug(users, action=False):
         s.get_login_status()
         s.login(username, password)
         s.requests.headers.update({"Host": "office.chaoxing.com"})
-        suc = s.submit(times, roomid, seatid, action)
-        if suc:
-            return
+        return s.submit(times, roomid, seatid, action)
+
+    workers = min(MAX_WORKERS, len(users))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="debug") as executor:
+        futures = [executor.submit(debug_one, i) for i in range(len(users))]
+        for future in as_completed(futures):
+            try:
+                if future.result():
+                    logging.info("[debug] 🎉 预约成功！")
+                    # 取消剩余任务（已在执行的会继续运行完，但不影响结果）
+                    for f in futures:
+                        f.cancel()
+                    return
+            except Exception as e:
+                logging.error(f"[debug] 线程异常: {e}")
 
 
 def get_roomid(args1, args2):
