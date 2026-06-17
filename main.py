@@ -65,6 +65,7 @@ def prepare_all(users, usernames, passwords, action):
             "roomid": roomid,
             "seatid": seatid,
             "action": action,
+            "username": username,
         }
 
     workers = min(MAX_WORKERS, len(users))
@@ -92,8 +93,8 @@ def submit_all(prepared, success_list):
         return success_list
 
     def submit_one(index, item):
-        # 随机抖动 50~300ms，避免所有线程同时请求触发反爬
-        jitter = random.uniform(0.05, 0.3)
+        # 随机抖动 80~500ms，同用户多时间段时增大错峰，降低303概率
+        jitter = random.uniform(0.08, 0.5)
         time.sleep(jitter)
 
         s = item["s"]
@@ -101,39 +102,34 @@ def submit_all(prepared, success_list):
         roomid = item["roomid"]
         seatid = item["seatid"]
         action = item["action"]
+        username = item.get("username", f"user{index}")
         for seat in seatid:
             url = s.url.format(roomid, seat)
-            token, value = s._get_page_token(url, require_value=True)
-            if not token:
-                logging.warning(f"[submit_all] seat={seat} token为空，跳过")
-                continue
-            result = s.get_submit(
-                s.submit_url,
-                times=times,
-                token=token,
-                roomid=roomid,
-                seatid=seat,
-                captcha="",
-                action=action,
-                value=value,
-            )
-            if result == "RELOGIN":
-                # 会话过期已自动重登，重新获取token再试
-                logging.info(f"[submit_all] 用户{index} 重登成功，重试获取token...")
-                token2, value2 = s._get_page_token(url, require_value=True)
-                if token2:
-                    result = s.get_submit(
-                        s.submit_url,
-                        times=times,
-                        token=token2,
-                        roomid=roomid,
-                        seatid=seat,
-                        captcha="",
-                        action=action,
-                        value=value2,
+            # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
+            for attempt in range(1, 4):
+                token, value = s._get_page_token(url, require_value=True)
+                if not token:
+                    logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
+                    break
+                result = s.get_submit(
+                    s.submit_url,
+                    times=times,
+                    token=token,
+                    roomid=roomid,
+                    seatid=seat,
+                    captcha="",
+                    action=action,
+                    value=value,
+                )
+                if result:
+                    return index, True
+                # 失败（303等）：短暂等待后刷新 token 立即重试
+                if attempt < 3:
+                    logging.info(
+                        f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
+                        f"刷新token重试..."
                     )
-            if result and result != "RELOGIN":
-                return index, True
+                    time.sleep(0.08)
         return index, False
 
     workers = min(MAX_WORKERS, len(pending))
