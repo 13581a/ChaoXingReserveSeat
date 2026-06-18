@@ -1,5 +1,6 @@
 from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
+import random
 import requests
 import re
 import time
@@ -72,7 +73,11 @@ class reserve:
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
     def _get_page_token(self, url, require_value=False):
-        """通过 GET 获取 token 与 algorithm 值，失败时自动重试"""
+        """通过 GET 获取 token 与 algorithm 值，失败时自动重试（高峰期加强版）
+
+        高峰期服务器负载高，可能返回空壳 HTML（未渲染 form 输入），
+        采用指数退避 + 随机抖动 + 更长重试窗口来应对。
+        """
         fetch_headers = {
             "Referer": "https://office.chaoxing.com/",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -80,7 +85,9 @@ class reserve:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Host": "office.chaoxing.com",
         }
-        max_retries = 5
+        # 高峰期加强：更多重试次数 + 更长退避，覆盖服务器恢复窗口
+        max_retries = 15
+        base_delay = 0.5  # 基础等待秒数
         for attempt in range(1, max_retries + 1):
             try:
                 resp = self.requests.get(
@@ -91,11 +98,14 @@ class reserve:
                         f"[token] 第{attempt}次 GET 返回 HTTP {resp.status_code}, url={url}"
                     )
                     if attempt < max_retries:
-                        time.sleep(self.sleep_time * attempt)
+                        delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                        delay = min(delay, 10)
+                        time.sleep(delay)
                     continue
 
                 html = resp.content.decode("utf-8")
-                logging.debug(f"[token] 第{attempt}次响应长度={len(html)}")
+                html_len = len(html)
+                logging.debug(f"[token] 第{attempt}次响应长度={html_len}")
 
                 # 提取 submit_enc → token
                 token_match = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
@@ -129,17 +139,32 @@ class reserve:
                     )
                     return token, value
 
-                # token 为空：记录 HTML 片段便于排查
-                logging.warning(
-                    f"[token] 第{attempt}次未匹配到 token, "
-                    f"HTML预览(300字符): {html[:300]}"
-                )
+                # token 为空：区分"空壳页面"和"完整页面但无 token"
+                if html_len < 2000:
+                    logging.warning(
+                        f"[token] 第{attempt}次响应过短({html_len}字符)，"
+                        f"疑似高峰期空壳页面，加大等待..."
+                    )
+                else:
+                    logging.warning(
+                        f"[token] 第{attempt}次未匹配到 token, 页面长度={html_len}, "
+                        f"HTML预览(300字符): {html[:300]}"
+                    )
                 if attempt < max_retries:
-                    time.sleep(self.sleep_time * attempt)
+                    # 空壳页面用更长退避；正常页面用标准退避
+                    if html_len < 2000:
+                        delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
+                    else:
+                        delay = base_delay * attempt + random.uniform(0, 0.3)
+                    delay = min(delay, 12)
+                    logging.debug(f"[token] 第{attempt}次失败，{delay:.1f}s 后重试...")
+                    time.sleep(delay)
             except Exception as e:
                 logging.warning(f"[token] 第{attempt}次请求异常: {e}")
                 if attempt < max_retries:
-                    time.sleep(self.sleep_time * attempt)
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    delay = min(delay, 10)
+                    time.sleep(delay)
 
         logging.error(f"[token] 全部{max_retries}次重试均失败, url={url}")
         return "", ""
@@ -300,7 +325,7 @@ class reserve:
                 captcha = self.resolve_captcha() if self.enable_slider else ""
                 if captcha:
                     logging.info(f"[submit] 滑块验证码: {captcha[:20]}...")
-                suc = self.get_submit(
+                suc, _ = self.get_submit(
                     self.submit_url,
                     times=times,
                     token=token,
@@ -344,11 +369,12 @@ class reserve:
             result = json.loads(html)
         except json.JSONDecodeError:
             logging.error(f"[submit] 响应非JSON, HTTP={resp.status_code}, 内容={html[:200]}")
-            return False
+            return False, ""
         self.submit_msg.append(f"{times[0]}~{times[1]}: {result}")
         success = result.get("success", False)
+        msg = result.get("msg", "")
         if success:
             logging.info(f"[submit] ✅ 预约成功! {result}")
         else:
             logging.warning(f"[submit] ❌ 预约失败: {result}")
-        return success
+        return success, msg
