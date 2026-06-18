@@ -59,6 +59,24 @@ def prepare_all(users, usernames, passwords, action):
         s.get_login_status()
         s.login(username, password)
         s.requests.headers.update({"Host": "office.chaoxing.com"})
+        # 预热：提前请求一次 token 页面，让服务器/CDN缓存"热起来"
+        # 使用快速单次请求，避免重试逻辑阻塞准备阶段
+        warmup_headers = {
+            "Referer": "https://office.chaoxing.com/",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Host": "office.chaoxing.com",
+        }
+        for seat in seatid:
+            try:
+                s.requests.get(
+                    url=s.url.format(roomid, seat),
+                    headers=warmup_headers,
+                    timeout=5,
+                    verify=False,
+                )
+            except Exception:
+                pass  # 预热失败不影响主流程
         return index, {
             "s": s,
             "times": times,
@@ -93,8 +111,8 @@ def submit_all(prepared, success_list):
         return success_list
 
     def submit_one(index, item):
-        # 随机抖动 80~500ms，同用户多时间段时增大错峰，降低303概率
-        jitter = random.uniform(0.08, 0.5)
+        # 随机抖动 100~800ms，同用户多时间段时增大错峰，降低303概率
+        jitter = random.uniform(0.1, 0.8)
         time.sleep(jitter)
 
         s = item["s"]
@@ -111,7 +129,7 @@ def submit_all(prepared, success_list):
                 if not token:
                     logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
                     break
-                result = s.get_submit(
+                success, msg = s.get_submit(
                     s.submit_url,
                     times=times,
                     token=token,
@@ -121,15 +139,27 @@ def submit_all(prepared, success_list):
                     action=action,
                     value=value,
                 )
-                if result:
+                if success:
                     return index, True
-                # 失败（303等）：短暂等待后刷新 token 立即重试
+                # 失败处理：加大抖动延迟，连续失败时刷新 session
                 if attempt < 3:
-                    logging.info(
-                        f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
-                        f"刷新token重试..."
-                    )
-                    time.sleep(0.08)
+                    retry_delay = random.uniform(0.2, 0.6)
+                    # 303 超时连续出现时刷新 session cookie
+                    if "303" in (msg or ""):
+                        logging.info(
+                            f"[submit_all] {username} seat={seat} 第{attempt}次失败(303超时)，"
+                            f"刷新session并等待{retry_delay:.1f}s..."
+                        )
+                        try:
+                            s.get_login_status()
+                        except Exception:
+                            pass
+                    else:
+                        logging.info(
+                            f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
+                            f"刷新token重试..."
+                        )
+                    time.sleep(retry_delay)
         return index, False
 
     workers = min(MAX_WORKERS, len(pending))
