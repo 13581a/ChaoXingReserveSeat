@@ -1,380 +1,327 @@
-from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
-import random
-import requests
-import re
 import time
+import random
+import argparse
+import os
 import logging
-import datetime
-from urllib3.exceptions import InsecureRequestWarning
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+from utils import reserve, get_user_credentials
+
+get_current_time = lambda action: (
+    time.strftime("%H:%M:%S", time.localtime(time.time() + 8 * 3600))
+    if action
+    else time.strftime("%H:%M:%S", time.localtime(time.time()))
+)
+get_current_dayofweek = lambda action: (
+    time.strftime("%A", time.localtime(time.time() + 8 * 3600))
+    if action
+    else time.strftime("%A", time.localtime(time.time()))
+)
+
+SLEEPTIME = 1.0
+ENDTIME = "08:01:00"
+ENABLE_SLIDER = False
+MAX_ATTEMPT = 5
+RESERVE_NEXT_DAY = True
+MAX_WORKERS = 10  # 最大并行线程数，可根据需要调整
 
 
-def get_date(day_offset: int = 0):
-    tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
-    today = datetime.datetime.now(tz_beijing).date()
-    offset_day = today + datetime.timedelta(days=day_offset)
-    tomorrow = offset_day.strftime("%Y-%m-%d")
-    return tomorrow
+def prepare_all(users, usernames, passwords, action):
+    """并行提前登录，多个用户同时进行，大幅缩短登录等待时间"""
+    current_dayofweek = get_current_dayofweek(action)
+    prepared = [None] * len(users)
 
-
-class reserve:
-    def __init__(
-        self,
-        sleep_time=0.2,
-        max_attempt=50,
-        enable_slider=False,
-        reserve_next_day=False,
-    ):
-        self.login_page = (
-            "https://passport2.chaoxing.com/mlogin?loginType=1&newversion=true&fid="
+    def login_one(index):
+        user = users[index]
+        username, password, times, roomid, seatid, daysofweek = user.values()
+        if type(seatid) == str:
+            seatid = [seatid]
+        if action:
+            username, password = (
+                usernames.split(",")[index],
+                passwords.split(",")[index],
+            )
+        if current_dayofweek not in daysofweek:
+            return index, None
+        logging.info(f"[prepare] ({index+1}/{len(users)}) 并行登录: user={username}, "
+                     f"times={times}, seatid={seatid}, roomid={roomid}")
+        s = reserve(
+            sleep_time=SLEEPTIME,
+            max_attempt=MAX_ATTEMPT,
+            enable_slider=ENABLE_SLIDER,
+            reserve_next_day=RESERVE_NEXT_DAY,
         )
-        self.url = (
-            "https://office.chaoxing.com/front/third/apps/seat/code?id={}&seatNum={}"
-        )
-        self.submit_url = "https://office.chaoxing.com/data/apps/seat/submit"
-        self.seat_url = "https://office.chaoxing.com/data/apps/seat/getusedtimes"
-        self.login_url = "https://passport2.chaoxing.com/fanyalogin"
-        self.token = ""
-        self.success_times = 0
-        self.fail_dict = []
-        self.submit_msg = []
-        self.requests = requests.session()
-        self.token_pattern = re.compile("token = '(.*?)'")
-        self.headers = {
-            "Referer": "https://office.chaoxing.com/",
-            "Host": "captcha.chaoxing.com",
-            "Pragma": "no-cache",
-            "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Linux"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        }
-        self.login_headers = {
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "cache-control": "no-cache",
-            "Connection": "keep-alive",
-            "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 10_3_1 like Mac OS X) AppleWebKit/603.1.3 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1 wechatdevtools/1.05.2109131 MicroMessenger/8.0.5 Language/zh_CN webview/16364215743155638",
-            "X-Requested-With": "XMLHttpRequest",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Host": "passport2.chaoxing.com",
-        }
-
-        self.sleep_time = sleep_time
-        self.max_attempt = max_attempt
-        self.enable_slider = enable_slider
-        self.reserve_next_day = reserve_next_day
-        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-
-    def _get_page_token(self, url, require_value=False):
-        """通过 GET 获取 token 与 algorithm 值，失败时自动重试（高峰期加强版）
-
-        高峰期服务器负载高，可能返回空壳 HTML（未渲染 form 输入），
-        采用指数退避 + 随机抖动 + 更长重试窗口来应对。
-        """
-        fetch_headers = {
+        s.get_login_status()
+        s.login(username, password)
+        s.requests.headers.update({"Host": "office.chaoxing.com"})
+        # 预热：提前请求一次 token 页面，让服务器/CDN缓存"热起来"
+        # 使用快速单次请求，避免重试逻辑阻塞准备阶段
+        warmup_headers = {
             "Referer": "https://office.chaoxing.com/",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Host": "office.chaoxing.com",
         }
-        # 高峰期加强：更多重试次数 + 更长退避，覆盖服务器恢复窗口
-        max_retries = 15
-        base_delay = 0.5  # 基础等待秒数
-        for attempt in range(1, max_retries + 1):
-            try:
-                resp = self.requests.get(
-                    url=url, headers=fetch_headers, timeout=15, verify=False
-                )
-                if resp.status_code != 200:
-                    logging.warning(
-                        f"[token] 第{attempt}次 GET 返回 HTTP {resp.status_code}, url={url}"
-                    )
-                    if attempt < max_retries:
-                        delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                        delay = min(delay, 10)
-                        time.sleep(delay)
-                    continue
-
-                html = resp.content.decode("utf-8")
-                html_len = len(html)
-                logging.debug(f"[token] 第{attempt}次响应长度={html_len}")
-
-                # 提取 submit_enc → token
-                token_match = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
-                token = token_match[0] if token_match else ""
-
-                # 提取 algorithm → value（多模式回退，应对页面结构变化）
-                value = ""
-                if require_value:
-                    for regex in (
-                        r'id="algorithm"\s+value="(.*?)"',
-                        r'name="algorithm"\s+value="(.*?)"',
-                        # 兜底：匹配第一个含 value 的 input，避免拿不到值
-                        r'<input[^>]+value="(.*?)"',
-                    ):
-                        m = re.findall(regex, html)
-                        if m:
-                            value = m[0]
-                            logging.debug(f"[token] value 匹配到正则: {regex[:40]}...")
-                            break
-                    if not value:
-                        all_values = re.findall(r'value="(.*?)"', html)
-                        logging.warning(
-                            f"[token] 所有 algorithm 正则均未匹配, "
-                            f"页面 value 片段(前5): {all_values[:5]}"
-                        )
-
-                if token:
-                    logging.info(
-                        f"[token] 第{attempt}次成功, token_len={len(token)}, "
-                        f"value_len={len(value)}, url={url}"
-                    )
-                    return token, value
-
-                # token 为空：区分"空壳页面"和"完整页面但无 token"
-                if html_len < 2000:
-                    logging.warning(
-                        f"[token] 第{attempt}次响应过短({html_len}字符)，"
-                        f"疑似高峰期空壳页面，加大等待..."
-                    )
-                else:
-                    logging.warning(
-                        f"[token] 第{attempt}次未匹配到 token, 页面长度={html_len}, "
-                        f"HTML预览(300字符): {html[:300]}"
-                    )
-                if attempt < max_retries:
-                    # 空壳页面用更长退避；正常页面用标准退避
-                    if html_len < 2000:
-                        delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
-                    else:
-                        delay = base_delay * attempt + random.uniform(0, 0.3)
-                    delay = min(delay, 12)
-                    logging.debug(f"[token] 第{attempt}次失败，{delay:.1f}s 后重试...")
-                    time.sleep(delay)
-            except Exception as e:
-                logging.warning(f"[token] 第{attempt}次请求异常: {e}")
-                if attempt < max_retries:
-                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                    delay = min(delay, 10)
-                    time.sleep(delay)
-
-        logging.error(f"[token] 全部{max_retries}次重试均失败, url={url}")
-        return "", ""
-
-    def get_login_status(self):
-        logging.info("[login] 获取登录页 Cookie...")
-        self.requests.headers = self.login_headers
-        resp = self.requests.get(url=self.login_page, verify=False)
-        logging.info(f"[login] 登录页 HTTP {resp.status_code}, cookie数量={len(self.requests.cookies)}")
-
-    def login(self, username, password):
-        enc_username = AES_Encrypt(username)
-        enc_password = AES_Encrypt(password)
-        parm = {
-            "fid": -1,
-            "uname": enc_username,
-            "password": enc_password,
-            "refer": "http%3A%2F%2Foffice.chaoxing.com%2Ffront%2Fthird%2Fapps%2Fseat%2Fcode%3Fid%3D4219%26seatNum%3D380",
-            "t": True,
-        }
-        resp = self.requests.post(url=self.login_url, params=parm, verify=False)
-        obj = resp.json()
-        if obj.get("status"):
-            logging.info(f"[login] 用户 {username} 登录成功")
-            return (True, "")
-        else:
-            msg = obj.get("msg2", obj.get("msg", "未知错误"))
-            logging.warning(f"[login] 用户 {username} 登录失败: {msg}")
-            return (False, msg)
-
-    def roomid(self, encode):
-        url = f"https://office.chaoxing.com/data/apps/seat/room/list?cpage=1&pageSize=100&firstLevelName=&secondLevelName=&thirdLevelName=&deptIdEnc={encode}"
-        json_data = self.requests.get(url=url).content.decode("utf-8")
-        ori_data = json.loads(json_data)
-        for i in ori_data["data"]["seatRoomList"]:
-            info = f'{i["firstLevelName"]}-{i["secondLevelName"]}-{i["thirdLevelName"]} id为：{i["id"]}'
-            print(info)
-
-    def resolve_captcha(self):
-        logging.info(f"Start to resolve captcha token")
-        captcha_token, bg, tp = self.get_slide_captcha_data()
-        logging.info(f"Successfully get prepared captcha_token {captcha_token}")
-        logging.info(f"Captcha Image URL-small {tp}, URL-big {bg}")
-        x = self.x_distance(bg, tp)
-        logging.info(f"Successfully calculate the captcha distance {x}")
-        params = {
-            "callback": "jQuery33109180509737430778_1716381333117",
-            "captchaId": "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1",
-            "type": "slide",
-            "token": captcha_token,
-            "textClickArr": json.dumps([{"x": x}]),
-            "coordinate": json.dumps([]),
-            "runEnv": "10",
-            "version": "1.1.18",
-            "_": int(time.time() * 1000),
-        }
-        response = self.requests.get(
-            f"https://captcha.chaoxing.com/captcha/check/verification/result",
-            params=params,
-            headers=self.headers,
-        )
-        text = response.text.replace(
-            "jQuery33109180509737430778_1716381333117(", ""
-        ).replace(")", "")
-        data = json.loads(text)
-        logging.info(f"Successfully resolve the captcha token {data}")
-        try:
-            validate_val = json.loads(data["extraData"])["validate"]
-            return validate_val
-        except KeyError as e:
-            logging.info("Can't load validate value. Maybe server return mistake.")
-            return ""
-
-    def get_slide_captcha_data(self):
-        url = "https://captcha.chaoxing.com/captcha/get/verification/image"
-        timestamp = int(time.time() * 1000)
-        capture_key, token = generate_captcha_key(timestamp)
-        referer = f"https://office.chaoxing.com/front/third/apps/seat/code?id=3993&seatNum=0199"
-        params = {
-            "callback": f"jQuery33107685004390294206_1716461324846",
-            "captchaId": "42sxgHoTPTKbt0uZxPJ7ssOvtXr3ZgZ1",
-            "type": "slide",
-            "version": "1.1.18",
-            "captchaKey": capture_key,
-            "token": token,
-            "referer": referer,
-            "_": timestamp,
-            "d": "a",
-            "b": "a",
-        }
-        response = self.requests.get(url=url, params=params, headers=self.headers)
-        content = response.text
-        data = content.replace(
-            "jQuery33107685004390294206_1716461324846(", ")"
-        ).replace(")", "")
-        data = json.loads(data)
-        captcha_token = data["token"]
-        bg = data["imageVerificationVo"]["shadeImage"]
-        tp = data["imageVerificationVo"]["cutoutImage"]
-        return captcha_token, bg, tp
-
-    def x_distance(self, bg, tp):
-        import numpy as np
-        import cv2
-
-        def cut_slide(slide):
-            slider_array = np.frombuffer(slide, np.uint8)
-            slider_image = cv2.imdecode(slider_array, cv2.IMREAD_UNCHANGED)
-            slider_part = slider_image[:, :, :3]
-            mask = slider_image[:, :, 3]
-            mask[mask != 0] = 255
-            x, y, w, h = cv2.boundingRect(mask)
-            cropped_image = slider_part[y : y + h, x : x + w]
-            return cropped_image
-
-        c_captcha_headers = {
-            "Referer": "https://office.chaoxing.com/",
-            "Host": "captcha-b.chaoxing.com",
-            "Pragma": "no-cache",
-            "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Linux"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        }
-        bgc, tpc = self.requests.get(bg, headers=c_captcha_headers), self.requests.get(
-            tp, headers=c_captcha_headers
-        )
-        bg, tp = bgc.content, tpc.content
-        bg_img = cv2.imdecode(np.frombuffer(bg, np.uint8), cv2.IMREAD_COLOR)
-        tp_img = cut_slide(tp)
-        bg_edge = cv2.Canny(bg_img, 100, 200)
-        tp_edge = cv2.Canny(tp_img, 100, 200)
-        bg_pic = cv2.cvtColor(bg_edge, cv2.COLOR_GRAY2RGB)
-        tp_pic = cv2.cvtColor(tp_edge, cv2.COLOR_GRAY2RGB)
-        res = cv2.matchTemplate(bg_pic, tp_pic, cv2.TM_CCOEFF_NORMED)
-        _, _, _, max_loc = cv2.minMaxLoc(res)
-        tl = max_loc
-        return tl[0]
-
-    def submit(self, times, roomid, seatid, action):
         for seat in seatid:
-            suc = False
-            remaining = self.max_attempt
-            while not suc and remaining > 0:
-                token, value = self._get_page_token(
-                    self.url.format(roomid, seat), require_value=True
+            try:
+                s.requests.get(
+                    url=s.url.format(roomid, seat),
+                    headers=warmup_headers,
+                    timeout=5,
+                    verify=False,
                 )
+            except Exception:
+                pass  # 预热失败不影响主流程
+        return index, {
+            "s": s,
+            "times": times,
+            "roomid": roomid,
+            "seatid": seatid,
+            "action": action,
+            "username": username,
+        }
+
+    workers = min(MAX_WORKERS, len(users))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="login") as executor:
+        futures = [executor.submit(login_one, i) for i in range(len(users))]
+        for future in as_completed(futures):
+            try:
+                idx, result = future.result()
+                prepared[idx] = result
+            except Exception as e:
+                logging.error(f"[prepare] 线程异常 index={idx}: {e}")
+
+    return prepared
+
+
+def submit_all(prepared, success_list):
+    """并行提交预约，多个用户同时抢座，互不阻塞"""
+    # 收集当前轮需要提交的项（未成功且有效）
+    pending = [
+        (i, item)
+        for i, item in enumerate(prepared)
+        if item is not None and not success_list[i]
+    ]
+    if not pending:
+        return success_list
+
+    def submit_one(index, item):
+        # 随机抖动 100~800ms，同用户多时间段时增大错峰，降低303概率
+        jitter = random.uniform(0.1, 0.8)
+        time.sleep(jitter)
+
+        s = item["s"]
+        times = item["times"]
+        roomid = item["roomid"]
+        seatid = item["seatid"]
+        action = item["action"]
+        username = item.get("username", f"user{index}")
+        for seat in seatid:
+            url = s.url.format(roomid, seat)
+            # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
+            for attempt in range(1, 4):
+                token, value = s._get_page_token(url, require_value=True)
                 if not token:
-                    logging.warning(f"[submit] seat={seat} token为空，等待重试...")
-                    time.sleep(self.sleep_time)
-                    remaining -= 1
-                    continue
-                captcha = self.resolve_captcha() if self.enable_slider else ""
-                if captcha:
-                    logging.info(f"[submit] 滑块验证码: {captcha[:20]}...")
-                suc, _ = self.get_submit(
-                    self.submit_url,
+                    logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
+                    break
+                success, msg = s.get_submit(
+                    s.submit_url,
                     times=times,
                     token=token,
                     roomid=roomid,
                     seatid=seat,
-                    captcha=captcha,
+                    captcha="",
                     action=action,
                     value=value,
                 )
-                if suc:
-                    return suc
-                time.sleep(self.sleep_time)
-                remaining -= 1
-            logging.warning(f"[submit] seat={seat} 已耗尽所有尝试次数")
-        return False
+                if success:
+                    return index, True
+                # 失败处理：加大抖动延迟，连续失败时刷新 session
+                if attempt < 3:
+                    retry_delay = random.uniform(0.2, 0.6)
+                    # 303 超时连续出现时刷新 session cookie
+                    if "303" in (msg or ""):
+                        logging.info(
+                            f"[submit_all] {username} seat={seat} 第{attempt}次失败(303超时)，"
+                            f"刷新session并等待{retry_delay:.1f}s..."
+                        )
+                        try:
+                            s.get_login_status()
+                        except Exception:
+                            pass
+                    else:
+                        logging.info(
+                            f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
+                            f"刷新token重试..."
+                        )
+                    time.sleep(retry_delay)
+        return index, False
 
-    def get_submit(
-        self, url, times, token, roomid, seatid, captcha="", action=False, value=""
-    ):
-        delta_day = 1 if self.reserve_next_day else 0
-        tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
-        beijing_today = datetime.datetime.now(tz_beijing)
-        day = beijing_today.date() + datetime.timedelta(days=delta_day)
-        parm = {
-            "roomId": roomid,
-            "startTime": times[0],
-            "endTime": times[1],
-            "day": str(day),
-            "seatNum": seatid,
-            "captcha": captcha,
-            "token": token,
-            "type": "1",
-            "verifyData": "1",
-        }
-        logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
-                     f"day={day} {times[0]}~{times[1]}")
-        parm["enc"] = verify_param(parm, value)
-        resp = self.requests.post(url=url, params=parm, verify=True)
-        html = resp.content.decode("utf-8")
-        try:
-            result = json.loads(html)
-        except json.JSONDecodeError:
-            logging.error(f"[submit] 响应非JSON, HTTP={resp.status_code}, 内容={html[:200]}")
-            return False, ""
-        self.submit_msg.append(f"{times[0]}~{times[1]}: {result}")
-        success = result.get("success", False)
-        msg = result.get("msg", "")
-        if success:
-            logging.info(f"[submit] ✅ 预约成功! {result}")
-        else:
-            logging.warning(f"[submit] ❌ 预约失败: {result}")
-        return success, msg
+    workers = min(MAX_WORKERS, len(pending))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="submit") as executor:
+        futures = {executor.submit(submit_one, i, item): i for i, item in pending}
+        for future in as_completed(futures):
+            try:
+                idx, result = future.result()
+                if result:
+                    success_list[idx] = True
+            except Exception as e:
+                logging.error(f"[submit_all] 线程异常 index={futures[future]}: {e}")
+
+    return success_list
+
+
+def main(users, action=False):
+    current_time = get_current_time(action)
+    logging.info(f"[main] 开始时间 {current_time}, 模式={'GitHub Action' if action else '本地'}")
+    usernames, passwords = None, None
+    if action:
+        usernames, passwords = get_user_credentials(action)
+    current_dayofweek = get_current_dayofweek(action)
+    today_reservation_num = sum(
+        1 for d in users if current_dayofweek in d.get("daysofweek")
+    )
+    success_list = [False] * len(users)
+    logging.info(f"[main] 今日待预约 {today_reservation_num}/{len(users)} 人")
+
+    prepared = prepare_all(users, usernames, passwords, action)
+
+    # 如果已过 08:00，跳过等待直接提交
+    if current_time < "08:00:00":
+        logging.info("[main] 预热登录完成，等待 08:00:00 整点提交...")
+        while True:
+            current_time = get_current_time(action)
+            if current_time >= "08:00:00":
+                break
+            time.sleep(0.1)
+    else:
+        logging.info("[main] 预热登录完成，已过 08:00，立即尝试提交...")
+
+    logging.info("[main] ⏰ 开始提交！")
+    attempt_times = 0
+    # do-while 模式：至少执行一轮，方便手动触发时验证 token 是否可获取
+    while True:
+        attempt_times += 1
+        success_list = submit_all(prepared, success_list)
+        done = sum(success_list)
+        current_time = get_current_time(action)
+        logging.info(f"[main] 第{attempt_times}轮 {current_time}, "
+                     f"已完成 {done}/{today_reservation_num}, 状态={success_list}")
+        if done == today_reservation_num:
+            logging.info(f"[main] 🎉 全部预约成功！共 {attempt_times} 轮")
+            return
+        if current_time >= ENDTIME:
+            logging.warning(f"[main] ⚠️ 已到截止时间 {ENDTIME}，"
+                           f"尚有 {today_reservation_num - done} 人未成功")
+            return
+        time.sleep(SLEEPTIME)
+
+
+def debug(users, action=False):
+    logging.info(
+        f"Global settings: \nSLEEPTIME: {SLEEPTIME}\nENDTIME: {ENDTIME}\nENABLE_SLIDER: {ENABLE_SLIDER}\nRESERVE_NEXT_DAY: {RESERVE_NEXT_DAY}"
+    )
+    logging.info(f" Debug Mode start! , action {'on' if action else 'off'}")
+    if action:
+        usernames, passwords = get_user_credentials(action)
+    current_dayofweek = get_current_dayofweek(action)
+
+    def debug_one(index):
+        user = users[index]
+        username, password, times, roomid, seatid, daysofweek = user.values()
+        if type(seatid) == str:
+            seatid = [seatid]
+        if action:
+            username, password = (
+                usernames.split(",")[index],
+                passwords.split(",")[index],
+            )
+        if current_dayofweek not in daysofweek:
+            logging.info("Today not set to reserve")
+            return False
+        logging.info(f"----------- {username} -- {times} -- {seatid} try -----------")
+        s = reserve(
+            sleep_time=SLEEPTIME,
+            max_attempt=MAX_ATTEMPT,
+            enable_slider=ENABLE_SLIDER,
+            reserve_next_day=RESERVE_NEXT_DAY,
+        )
+        s.get_login_status()
+        s.login(username, password)
+        s.requests.headers.update({"Host": "office.chaoxing.com"})
+        return s.submit(times, roomid, seatid, action)
+
+    workers = min(MAX_WORKERS, len(users))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="debug") as executor:
+        futures = [executor.submit(debug_one, i) for i in range(len(users))]
+        for future in as_completed(futures):
+            try:
+                if future.result():
+                    logging.info("[debug] 🎉 预约成功！")
+                    # 取消剩余任务（已在执行的会继续运行完，但不影响结果）
+                    for f in futures:
+                        f.cancel()
+                    return
+            except Exception as e:
+                logging.error(f"[debug] 线程异常: {e}")
+
+
+def get_roomid(args1, args2):
+    username = input("请输入用户名：")
+    password = input("请输入密码：")
+    s = reserve(
+        sleep_time=SLEEPTIME,
+        max_attempt=MAX_ATTEMPT,
+        enable_slider=ENABLE_SLIDER,
+        reserve_next_day=RESERVE_NEXT_DAY,
+    )
+    s.get_login_status()
+    s.login(username=username, password=password)
+    s.requests.headers.update({"Host": "office.chaoxing.com"})
+    encode = input("请输入deptldEnc：")
+    s.roomid(encode)
+
+
+if __name__ == "__main__":
+    beijing_now = time.time() + 8 * 3600
+    beijing_struct = time.gmtime(beijing_now)
+    target_seconds = 8 * 3600
+    current_seconds = beijing_struct.tm_hour * 3600 + beijing_struct.tm_min * 60 + beijing_struct.tm_sec
+    wait = target_seconds - current_seconds
+
+    # 🟢 终极优化：更改提前唤醒时间为 3 秒，避免过度空转与 Token 提前老化
+    if wait > 3:
+        logging.info(f"距离北京时间 08:00:00 还有 {wait} 秒，等待中...")
+        time.sleep(wait - 3)
+        logging.info("提前 3 秒开始预热登录...")
+    elif wait > 0:
+        logging.info(f"距离08:00不足 3 秒，立即预热登录...")
+    else:
+        logging.info("已过北京时间 08:00:00，立即执行")
+
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    parser = argparse.ArgumentParser(prog="Chao Xing seat auto reserve")
+    parser.add_argument("-u", "--user", default=config_path, help="user config file")
+    parser.add_argument(
+        "-m",
+        "--method",
+        default="reserve",
+        choices=["reserve", "debug", "room"],
+        help="for debug",
+    )
+    parser.add_argument(
+        "-a",
+        "--action",
+        action="store_true",
+        help="use --action to enable in github action",
+    )
+    args = parser.parse_args()
+    func_dict = {"reserve": main, "debug": debug, "room": get_roomid}
+    with open(args.user, "r+") as data:
+        usersdata = json.load(data)["reserve"]
+    func_dict[args.method](usersdata, args.action)
